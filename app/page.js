@@ -1,24 +1,36 @@
+// app/page.js
 "use client";
 
-import { useState, useRef } from "react";
+import { useState } from "react";
 import VoiceInput from "./components/VoiceInput";
 import CitySearch from "./components/CitySearch";
 import LocationButton from "./components/LocationButton";
 import WeatherCard from "./components/WeatherCard";
-import AISuggestions from "./components/AISuggestions";
+import CategoryTabs from "./components/CategoryTabs";
+import LanguageToggle from "./components/LanguageToggle";
+import SuggestionsPanel from "./components/SuggestionsPanel";
 import { getTranslation } from "./lib/i18n";
 
 export default function Home() {
+  // UI Language (for labels, not AI response)
   const [language, setLanguage] = useState("en");
+  
+  // Category selection
+  const [category, setCategory] = useState("travel");
+  
+  // User input
   const [transcript, setTranscript] = useState("");
+  
+  // Location & Weather
   const [selectedCity, setSelectedCity] = useState(null);
   const [weather, setWeather] = useState(null);
-  const [currentSuggestion, setCurrentSuggestion] = useState(null);
-  const [history, setHistory] = useState([]);
-  const [loading, setLoading] = useState(false);
   const [weatherError, setWeatherError] = useState("");
-  const [lastRegenerateTime, setLastRegenerateTime] = useState(0);
-
+  
+  // AI Suggestions state
+  const [loading, setLoading] = useState(false);
+  const [suggestions, setSuggestions] = useState(null);
+  const [apiError, setApiError] = useState("");
+  
   const t = getTranslation(language);
 
   // Fetch weather by city or coordinates
@@ -69,21 +81,10 @@ export default function Home() {
     }
   };
 
-  const generateAISuggestions = async (regenerate = false) => {
-    // Rate limit regenerate to once per 3 seconds
-    if (regenerate) {
-      const now = Date.now();
-      if (now - lastRegenerateTime < 3000) {
-        alert(language === "ja" 
-          ? "少し待ってから再試行してください" 
-          : "Please wait a moment before regenerating"
-        );
-        return;
-      }
-      setLastRegenerateTime(now);
-    }
-
+  // Generate AI suggestions
+  const generateSuggestions = async () => {
     setLoading(true);
+    setApiError("");
 
     try {
       // Get weather if not already fetched
@@ -95,80 +96,47 @@ export default function Home() {
         });
       }
 
-      // If still no weather, use a fallback
+      // Fallback weather if none available
       if (!weatherData) {
         weatherData = {
-          city: selectedCity?.display || "Unknown",
+          city: selectedCity?.display || "Unknown Location",
           temp: null,
           condition: "unknown",
           wind: null
         };
       }
 
-      const requestBody = {
-        user_text: transcript || (language === "ja" ? "今日の天気は？" : "What's the weather today?"),
-        weather: weatherData,
-        theme: "travel"
+      // Build request payload
+      const payload = {
+        category: category,
+        user_text: transcript || (language === "ja" ? "今日のおすすめは？" : "What do you recommend today?"),
+        weather: weatherData
       };
+
+      console.log("Sending to API:", payload);
 
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(requestBody)
+        body: JSON.stringify(payload)
       });
 
       const data = await response.json();
 
       if (response.ok) {
-        // Try to parse if it's raw text
-        let suggestion;
-        if (data.title && data.bullets) {
-          suggestion = data;
-        } else if (data.raw) {
-          try {
-            suggestion = JSON.parse(data.raw);
-          } catch {
-            suggestion = { 
-              title: language === "ja" ? "AI応答" : "AI Response",
-              bullets: [data.raw],
-              summary: "",
-              raw: data.raw 
-            };
-          }
-        } else {
-          suggestion = data;
-        }
-
-        setCurrentSuggestion(suggestion);
-        
-        // Add to history (only if not regenerating)
-        if (!regenerate) {
-          setHistory(prev => [{
-            suggestion,
-            timestamp: Date.now()
-          }, ...prev].slice(0, 10)); // Keep last 10
-        }
+        setSuggestions(data);
+        setApiError("");
       } else {
-        setCurrentSuggestion({ 
-          error: data.error || t.aiSuggestions.error 
-        });
+        setApiError(data.error || "Failed to generate suggestions");
+        setSuggestions(null);
       }
     } catch (error) {
       console.error("AI generation error:", error);
-      setCurrentSuggestion({ 
-        error: t.aiSuggestions.error + ": " + error.message 
-      });
+      setApiError(error.message || "Network error. Please try again.");
+      setSuggestions(null);
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleSendToAI = () => {
-    generateAISuggestions(false);
-  };
-
-  const handleRegenerate = () => {
-    generateAISuggestions(true);
   };
 
   const handleClear = () => {
@@ -176,11 +144,8 @@ export default function Home() {
     setSelectedCity(null);
     setWeather(null);
     setWeatherError("");
-    setCurrentSuggestion(null);
-  };
-
-  const toggleLanguage = () => {
-    setLanguage(prev => prev === "en" ? "ja" : "en");
+    setSuggestions(null);
+    setApiError("");
   };
 
   return (
@@ -190,45 +155,21 @@ export default function Home() {
         {/* Left Panel - Controls (35%) */}
         <div className="bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 overflow-y-auto">
           <div className="p-6 space-y-6">
-            {/* Header */}
+            {/* Header with Language Toggle */}
             <div className="flex items-center justify-between mb-6">
               <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
                 {t.appName}
               </h1>
-              <button
-                onClick={toggleLanguage}
-                className="px-4 py-2 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 rounded-lg font-medium text-sm transition-colors"
-                aria-label={t.language}
-              >
-                {language === "en" ? "EN" : "日本語"}
-              </button>
+              <LanguageToggle language={language} onChange={setLanguage} />
             </div>
 
-            {/* Voice Input */}
-            <VoiceInput 
-              onTranscript={setTranscript} 
-              language={language}
-              t={t}
-            />
-
-            {/* Transcript */}
+            {/* STEP 1: City Search */}
             <div>
               <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
-                {t.transcript}
-              </label>
-              <textarea
-                value={transcript}
-                onChange={(e) => setTranscript(e.target.value)}
-                rows={4}
-                placeholder={t.placeholders.transcript}
-                className="w-full px-4 py-3 border-2 border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
-              />
-            </div>
-
-            {/* City Search */}
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
-                {t.searchCity}
+                <span className="inline-flex items-center gap-2">
+                  <span className="flex items-center justify-center w-6 h-6 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded-full text-xs font-bold">1</span>
+                  {t.searchCity}
+                </span>
               </label>
               <CitySearch onSelectCity={handleCitySelect} t={t} />
             </div>
@@ -245,29 +186,77 @@ export default function Home() {
               </div>
             )}
 
+            {/* Fetch Weather Button */}
+            <button
+              onClick={handleFetchWeather}
+              disabled={!selectedCity}
+              className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-all duration-200 shadow-sm hover:shadow-md"
+            >
+              🔄 {t.fetchWeather}
+            </button>
+
+            {/* Divider */}
+            <div className="border-t border-gray-200 dark:border-gray-700 my-2"></div>
+
+            {/* STEP 2: Category Selection */}
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">
+                <span className="inline-flex items-center gap-2">
+                  <span className="flex items-center justify-center w-6 h-6 bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300 rounded-full text-xs font-bold">2</span>
+                  {t.category}
+                </span>
+              </label>
+              <CategoryTabs 
+                selected={category} 
+                onChange={setCategory}
+                language={language}
+              />
+            </div>
+
+            {/* STEP 3: Voice Input & Transcript */}
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+                <span className="inline-flex items-center gap-2">
+                  <span className="flex items-center justify-center w-6 h-6 bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 rounded-full text-xs font-bold">3</span>
+                  {language === "ja" ? "音声入力または質問" : "Voice Input or Question"}
+                </span>
+              </label>
+              <VoiceInput 
+                onTranscript={setTranscript} 
+                language={language}
+                t={t}
+              />
+            </div>
+
+            {/* Transcript */}
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+                {t.transcript}
+              </label>
+              <textarea
+                value={transcript}
+                onChange={(e) => setTranscript(e.target.value)}
+                rows={4}
+                placeholder={t.placeholders.transcript}
+                className="w-full px-4 py-3 border-2 border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+              />
+            </div>
+
             {/* Action Buttons */}
             <div className="space-y-3">
               <button
-                onClick={handleFetchWeather}
-                disabled={!selectedCity}
-                className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-all duration-200 shadow-sm hover:shadow-md"
-              >
-                {t.fetchWeather}
-              </button>
-
-              <button
-                onClick={handleSendToAI}
+                onClick={generateSuggestions}
                 disabled={loading || !transcript.trim()}
                 className="w-full py-3 px-4 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 disabled:from-gray-400 disabled:to-gray-400 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-all duration-200 shadow-sm hover:shadow-md"
               >
-                {loading ? t.aiSuggestions.loading : t.sendToAI}
+                {loading ? t.aiSuggestions.loading : "✨ " + t.sendToAI}
               </button>
 
               <button
                 onClick={handleClear}
                 className="w-full py-3 px-4 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-900 dark:text-white font-medium rounded-lg transition-all duration-200"
               >
-                {t.clear}
+                🗑️ {t.clear}
               </button>
             </div>
           </div>
@@ -276,13 +265,13 @@ export default function Home() {
         {/* Right Panel - AI Suggestions (65%) */}
         <div className="bg-gray-50 dark:bg-gray-900 overflow-y-auto">
           <div className="p-8">
-            <AISuggestions
-              currentSuggestion={currentSuggestion}
+            <SuggestionsPanel
+              suggestions={suggestions}
               loading={loading}
-              history={history}
-              t={t}
+              error={apiError}
               language={language}
-              onRegenerate={handleRegenerate}
+              t={t}
+              onRetry={generateSuggestions}
             />
           </div>
         </div>
@@ -290,7 +279,7 @@ export default function Home() {
 
       {/* Mobile: Stacked layout */}
       <div className="lg:hidden">
-        {/* Controls Section (Top 30-40%) */}
+        {/* Controls Section (Top) */}
         <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
           <div className="p-4 space-y-4 max-h-[40vh] overflow-y-auto">
             {/* Header */}
@@ -298,13 +287,22 @@ export default function Home() {
               <h1 className="text-xl font-bold text-gray-900 dark:text-white">
                 {t.appName}
               </h1>
-              <button
-                onClick={toggleLanguage}
-                className="px-3 py-1.5 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 rounded-lg font-medium text-sm transition-colors"
-              >
-                {language === "en" ? "EN" : "日本語"}
-              </button>
+              <LanguageToggle language={language} onChange={setLanguage} />
             </div>
+
+            {/* Category Selection */}
+            <CategoryTabs 
+              selected={category} 
+              onChange={setCategory}
+              language={language}
+            />
+
+            {/* Category Selection */}
+            <CategoryTabs 
+              selected={category} 
+              onChange={setCategory}
+              language={language}
+            />
 
             {/* Voice Input */}
             <VoiceInput 
@@ -343,7 +341,7 @@ export default function Home() {
             {/* Action Buttons */}
             <div className="flex gap-2">
               <button
-                onClick={handleSendToAI}
+                onClick={generateSuggestions}
                 disabled={loading || !transcript.trim()}
                 className="flex-1 py-2 px-3 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 disabled:from-gray-400 disabled:to-gray-400 text-white text-sm font-medium rounded-lg"
               >
@@ -359,15 +357,15 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Suggestions Section (Bottom 60-70%) */}
+        {/* Suggestions Section (Bottom) */}
         <div className="p-4 min-h-[60vh]">
-          <AISuggestions
-            currentSuggestion={currentSuggestion}
+          <SuggestionsPanel
+            suggestions={suggestions}
             loading={loading}
-            history={history}
-            t={t}
+            error={apiError}
             language={language}
-            onRegenerate={handleRegenerate}
+            t={t}
+            onRetry={generateSuggestions}
           />
         </div>
       </div>
