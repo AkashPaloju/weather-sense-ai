@@ -7,6 +7,7 @@ import ResultCard from "./ResultCard";
 /**
  * SuggestionsPanel - Displays AI suggestions in selected language (EN or JP)
  * Shows both results with language toggle, metadata, and error states
+ * NOW INCLUDES: "Continue to Chat" button
  */
 export default function SuggestionsPanel({ 
   suggestions, 
@@ -14,7 +15,8 @@ export default function SuggestionsPanel({
   error,
   language,
   t,
-  onRetry 
+  onRetry,
+  onContinueChat // NEW PROP
 }) {
   const [showMeta, setShowMeta] = useState(false);
 
@@ -136,6 +138,20 @@ export default function SuggestionsPanel({
           language={language}
           t={t}
         />
+
+        {/* NEW: Continue to Chat Button */}
+        {onContinueChat && (
+          <button
+            onClick={onContinueChat}
+            className="w-full mt-4 py-3 px-4 bg-gradient-to-r from-green-600 to-teal-600 hover:from-green-700 hover:to-teal-700 text-white font-medium rounded-lg transition-all duration-200 shadow-sm hover:shadow-md flex items-center justify-center gap-2"
+          >
+            <span>💬</span>
+            <span>{language === "ja" ? "チャットを続ける" : "Continue to Chat"}</span>
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+            </svg>
+          </button>
+        )}
       </div>
 
       {/* Metadata Section (Developer Toggle) */}

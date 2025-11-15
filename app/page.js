@@ -9,6 +9,7 @@ import WeatherCard from "./components/WeatherCard";
 import CategoryTabs from "./components/CategoryTabs";
 import LanguageToggle from "./components/LanguageToggle";
 import SuggestionsPanel from "./components/SuggestionsPanel";
+import ChatPanel from "./components/ChatPanel";
 import { getTranslation } from "./lib/i18n";
 
 export default function Home() {
@@ -31,6 +32,10 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [suggestions, setSuggestions] = useState(null);
   const [apiError, setApiError] = useState("");
+  
+  // NEW: Chat Mode state
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatHistory, setChatHistory] = useState([]);
   
   const t = getTranslation(language);
 
@@ -150,6 +155,60 @@ export default function Home() {
     }
   };
 
+  // NEW: Handle opening chat mode
+  const handleContinueChat = () => {
+    if (!suggestions) return;
+
+    // Build initial chat history with 2 messages:
+    // 1. User's original question
+    // 2. Assistant's combined summary of the 3 suggestions
+
+    const userQuestion = transcript || (language === "ja" ? "今日のおすすめは？" : "What do you recommend today?");
+    
+    // Get English suggestion data
+    const enSuggestion = suggestions.en;
+    
+    // Create combined English summary for assistant message
+    const assistantSummary = `${enSuggestion.title}
+
+${enSuggestion.bullets.map((b, i) => `${i + 1}. ${b}`).join('\n')}
+
+${enSuggestion.summary}`;
+
+    // Get Japanese version if available
+    const jpSuggestion = suggestions.jp;
+    const assistantSummaryJP = jpSuggestion ? `${jpSuggestion.title}
+
+${jpSuggestion.bullets.map((b, i) => `${i + 1}. ${b}`).join('\n')}
+
+${jpSuggestion.summary}` : assistantSummary;
+
+    // Initialize chat history with 2 messages
+    const initialHistory = [
+      {
+        role: "user",
+        text_en: userQuestion, // Store as English (or raw if was EN)
+        text_jp: userQuestion, // Store raw question
+        timestamp: Date.now() - 1000 // Slightly in the past
+      },
+      {
+        role: "assistant",
+        text_en: assistantSummary,
+        text_jp: assistantSummaryJP,
+        timestamp: Date.now()
+      }
+    ];
+
+    setChatHistory(initialHistory);
+    setChatOpen(true);
+  };
+
+  // NEW: Handle closing chat mode
+  const handleCloseChat = () => {
+    setChatOpen(false);
+    // Keep chat history in case user wants to reopen
+  };
+
   const handleClear = () => {
     setTranscript("");
     setSelectedCity(null);
@@ -157,6 +216,8 @@ export default function Home() {
     setWeatherError("");
     setSuggestions(null);
     setApiError("");
+    setChatOpen(false);
+    setChatHistory([]);
   };
 
   return (
@@ -273,18 +334,32 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Right Panel - AI Suggestions (65%) */}
+        {/* Right Panel - AI Suggestions OR Chat (65%) */}
         <div className="bg-gray-50 dark:bg-gray-900 overflow-y-auto">
-          <div className="p-8">
-            <SuggestionsPanel
-              suggestions={suggestions}
-              loading={loading}
-              error={apiError}
+          {chatOpen ? (
+            // NEW: Chat Panel
+            <ChatPanel
+              initialHistory={chatHistory}
+              category={category}
+              weather={weather}
               language={language}
               t={t}
-              onRetry={generateSuggestions}
+              onClose={handleCloseChat}
             />
-          </div>
+          ) : (
+            // Original: Suggestions Panel
+            <div className="p-8">
+              <SuggestionsPanel
+                suggestions={suggestions}
+                loading={loading}
+                error={apiError}
+                language={language}
+                t={t}
+                onRetry={generateSuggestions}
+                onContinueChat={suggestions ? handleContinueChat : null}
+              />
+            </div>
+          )}
         </div>
       </div>
 
@@ -300,13 +375,6 @@ export default function Home() {
               </h1>
               <LanguageToggle language={language} onChange={setLanguage} />
             </div>
-
-            {/* Category Selection */}
-            <CategoryTabs 
-              selected={category} 
-              onChange={setCategory}
-              language={language}
-            />
 
             {/* Category Selection */}
             <CategoryTabs 
@@ -368,16 +436,34 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Suggestions Section (Bottom) */}
-        <div className="p-4 min-h-[60vh]">
-          <SuggestionsPanel
-            suggestions={suggestions}
-            loading={loading}
-            error={apiError}
-            language={language}
-            t={t}
-            onRetry={generateSuggestions}
-          />
+        {/* Suggestions/Chat Section (Bottom) */}
+        <div className="min-h-[60vh]">
+          {chatOpen ? (
+            // NEW: Chat Panel (Mobile)
+            <div className="h-[60vh]">
+              <ChatPanel
+                initialHistory={chatHistory}
+                category={category}
+                weather={weather}
+                language={language}
+                t={t}
+                onClose={handleCloseChat}
+              />
+            </div>
+          ) : (
+            // Original: Suggestions Panel (Mobile)
+            <div className="p-4">
+              <SuggestionsPanel
+                suggestions={suggestions}
+                loading={loading}
+                error={apiError}
+                language={language}
+                t={t}
+                onRetry={generateSuggestions}
+                onContinueChat={suggestions ? handleContinueChat : null}
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>
