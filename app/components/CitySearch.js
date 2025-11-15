@@ -9,9 +9,11 @@ export default function CitySearch({ onSelectCity, t }) {
   const [showDropdown, setShowDropdown] = useState(false);
   const [error, setError] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(-1);
+  
   const debounceTimer = useRef(null);
   const dropdownRef = useRef(null);
   const inputRef = useRef(null);
+  const isSelectingRef = useRef(false); // Use ref instead of state!
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -27,6 +29,12 @@ export default function CitySearch({ onSelectCity, t }) {
 
   // Fetch suggestions with debounce
   useEffect(() => {
+    // CRITICAL: Skip if we just selected something
+    if (isSelectingRef.current) {
+      isSelectingRef.current = false;
+      return;
+    }
+
     if (query.trim().length < 2) {
       setSuggestions([]);
       setShowDropdown(false);
@@ -72,10 +80,24 @@ export default function CitySearch({ onSelectCity, t }) {
   }, [query, t]);
 
   const handleSelectCity = (city) => {
+    // Step 1: Set the ref flag FIRST (synchronous)
+    isSelectingRef.current = true;
+    
+    // Step 2: Clear debounce timer
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current);
+      debounceTimer.current = null;
+    }
+    
+    // Step 3: Update query
     setQuery(city.display);
+    
+    // Step 4: Close dropdown and clear suggestions
     setShowDropdown(false);
     setSuggestions([]);
     setSelectedIndex(-1);
+    
+    // Step 5: Notify parent
     onSelectCity(city);
   };
 
@@ -133,7 +155,12 @@ export default function CitySearch({ onSelectCity, t }) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
-          onFocus={() => suggestions.length > 0 && setShowDropdown(true)}
+          onFocus={() => {
+            // Only show dropdown if we have suggestions and not just selected
+            if (suggestions.length > 0 && !isSelectingRef.current) {
+              setShowDropdown(true);
+            }
+          }}
           placeholder={t.placeholders.city}
           aria-label={t.searchCity}
           className="
@@ -192,8 +219,8 @@ export default function CitySearch({ onSelectCity, t }) {
         </div>
       )}
 
-      {/* No results message */}
-      {showDropdown && query.length >= 2 && suggestions.length === 0 && !loading && (
+      {/* No results message - only show if actively searching */}
+      {showDropdown && query.length >= 2 && suggestions.length === 0 && !loading && !isSelectingRef.current && (
         <div className="
           absolute z-10 w-full mt-1
           bg-white dark:bg-gray-800

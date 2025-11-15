@@ -2,7 +2,21 @@
 
 import { getWeatherIcon } from "./WeatherIcons";
 
-export default function WeatherCard({ weather, t }) {
+export default function WeatherCard({ weather, t, weatherLoading }) {
+  if (weatherLoading) {
+    return (
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-md p-4 mb-4 border border-gray-200 dark:border-gray-700">
+        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">
+          {t.weatherCard.title}
+        </h3>
+        <div className="animate-pulse space-y-4">
+          <div className="h-6 bg-gray-200 dark:bg-gray-700 rounded w-1/2 mb-4"></div>
+          <div className="h-40 bg-gray-200 dark:bg-gray-700 rounded"></div>
+        </div>
+      </div>
+    );
+  }
+
   if (!weather) {
     return (
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow-md p-4 mb-4 border border-gray-200 dark:border-gray-700">

@@ -24,6 +24,7 @@ export default function Home() {
   // Location & Weather
   const [selectedCity, setSelectedCity] = useState(null);
   const [weather, setWeather] = useState(null);
+  const [weatherLoading, setWeatherLoading] = useState(false);
   const [weatherError, setWeatherError] = useState("");
   
   // AI Suggestions state
@@ -34,14 +35,16 @@ export default function Home() {
   const t = getTranslation(language);
 
   // Fetch weather by city or coordinates
-  const fetchWeather = async (cityOrCoords) => {
+  const fetchWeather = async (params) => {
     setWeatherError("");
+    setWeatherLoading(true);
+    console.log("Fetching weather with params:", params);
     try {
       let url;
-      if (cityOrCoords.lat && cityOrCoords.lon) {
-        url = `/api/weather?lat=${cityOrCoords.lat}&lon=${cityOrCoords.lon}`;
-      } else if (typeof cityOrCoords === "string") {
-        url = `/api/weather?city=${encodeURIComponent(cityOrCoords)}`;
+      if (params.lat && params.lon) {
+        url = `/api/weather?lat=${params.lat}&lon=${params.lon}`;
+      } else if (typeof params === "string") {
+        url = `/api/weather?city=${encodeURIComponent(params)}`;
       } else {
         throw new Error("Invalid city or coordinates");
       }
@@ -50,22 +53,30 @@ export default function Home() {
       const data = await response.json();
 
       if (response.ok) {
+        // Override the city name with user's selection if available
+        if (params.selectedCity) {
+          data.city = params.selectedCity.display;
+          data.selectedCityObject = params.selectedCity; // Store full object
+        }
         setWeather(data);
+        setWeatherLoading(false);
         return data;
       } else {
         setWeatherError(t.errors.weatherFailed);
+        setWeatherLoading(false);
         return null;
       }
     } catch (error) {
       console.error("Weather fetch error:", error);
       setWeatherError(t.errors.weatherFailed);
+      setWeatherLoading(false);
       return null;
     }
   };
 
   const handleCitySelect = (city) => {
     setSelectedCity(city);
-    fetchWeather({ lat: city.lat, lon: city.lon });
+    fetchWeather({ lat: city.lat, lon: city.lon, selectedCity: city });
   };
 
   const handleLocationFound = (location) => {
@@ -77,7 +88,7 @@ export default function Home() {
 
   const handleFetchWeather = () => {
     if (selectedCity) {
-      fetchWeather({ lat: selectedCity.lat, lon: selectedCity.lon });
+      fetchWeather({ lat: selectedCity.lat, lon: selectedCity.lon, selectedCity: selectedCity });
     }
   };
 
@@ -178,7 +189,7 @@ export default function Home() {
             <LocationButton onLocationFound={handleLocationFound} t={t} />
 
             {/* Weather Card */}
-            <WeatherCard weather={weather} t={t} />
+            <WeatherCard weather={weather} t={t} weatherLoading={weatherLoading} />
 
             {weatherError && (
               <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 text-sm text-yellow-800 dark:text-yellow-200">
