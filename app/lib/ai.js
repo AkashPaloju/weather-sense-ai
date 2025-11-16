@@ -1,259 +1,108 @@
 // app/lib/ai.js
-// Shared AI helpers for generate + chat routes (Gemini-only stack)
-// Exports: callGemini, isJapaneseText, extractJsonFromText,
-//         translateTextJPtoEN, translateObjectToJapanese,
-//         buildDomainPrompt, normalizeParsed, domainFallbacks
+// Helper utilities for calling Gemini (Google Generative Language API),
+// simple JP detection, translation helpers, and small formatting helpers.
 
-export const GEMINI_MODEL = "gemini-2.0-flash";
+export const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+export const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
-export function isJapaneseText(s) {
-  if (!s || typeof s !== "string") return false;
-  return /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/.test(s);
+function safeTrim(s) {
+  if (!s && s !== "") return "";
+  return String(s).trim();
 }
 
-export function extractJsonFromText(text) {
-  if (!text || typeof text !== "string") return null;
-  const first = text.indexOf("{");
-  const last = text.lastIndexOf("}");
-  if (first === -1 || last === -1 || last <= first) return null;
-  const sub = text.slice(first, last + 1);
-  try {
-    return JSON.parse(sub);
-  } catch (e) {
-    return null;
-  }
-}
+export async function callGeminiRaw(prompt, apiKey, model = GEMINI_MODEL, maxOutputTokens = 400) {
+  // Calls the Gemini generateContent endpoint and returns { text, status, rawJson }
+  const url = `${GEMINI_API_BASE}/${model}:generateContent?key=${apiKey}`;
+  const body = {
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    generationConfig: {
+      maxOutputTokens,
+      temperature: 0.4,
+      // responseMimeType: "application/json" // avoid forcing mime; we parse returned text
+    },
+  };
 
-export async function callGemini(prompt, apiKey, model = GEMINI_MODEL, maxOutputTokens = 400) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.2, maxOutputTokens, responseMimeType: "text/plain" }
-    })
+    body: JSON.stringify(body),
   });
-  const json = await res.json().catch(()=>null);
-  const raw = json?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-  return { ok: res.ok, status: res.status, json, raw };
-}
 
-export async function translateTextJPtoEN(text, apiKey) {
-  // Ask Gemini to translate JP->EN (plain text output)
-  const prompt = `
-Detect language and if the text is Japanese, translate it to fluent English. Return only the translated text as plain text (no JSON).
-Text:
-"""${text}"""
-`;
-  const r = await callGemini(prompt, apiKey);
-  return { text: (r.raw || "").trim(), meta: r };
-}
+  const status = res.status;
+  let json = null;
+  try {
+    json = await res.json();
+  } catch (e) {
+    const txt = await res.text().catch(() => "");
+    return { text: txt, status, rawJson: null };
+  }
 
-export async function translateObjectToJapanese(obj, apiKey) {
-  // Translate JSON values to Japanese; returns parsed JSON or null
-  const prompt = `
-Translate the VALUES of this JSON into natural Japanese. Keep the same keys and return only valid JSON.
-
-${JSON.stringify(obj, null, 2)}
-`;
-  const r = await callGemini(prompt, apiKey);
-  const parsed = extractJsonFromText(r.raw);
-  return { parsed, raw: r.raw, meta: r };
-}
-
-// --- domain-specific prompts + fallbacks (same as generate route) ---
-
-function fashionFallback(weather) {
-  const t = Number(weather?.temp);
-  if (!isNaN(t)) {
-    if (t <= 0) {
-      return {
-        title: "Extreme cold — heavy protection",
-        bullets: ["Heavy insulated coat (down)", "Scarf, gloves, warm hat", "Insulated boots"],
-        summary: `${t}°C — very cold, prioritize insulation.`,
-        reason: "Local fallback: temperature indicates extreme cold."
-      };
+  // The returned structure contains `candidates` -> content -> parts[] -> text
+  try {
+    const candidates = json?.candidates || json?.candidate || [];
+    if (Array.isArray(candidates) && candidates.length > 0) {
+      const parts = candidates[0]?.content?.parts || candidates[0]?.content || [];
+      if (Array.isArray(parts) && parts.length > 0 && typeof parts[0]?.text === "string") {
+        const text = parts.map(p => p.text).join("\n");
+        return { text: safeTrim(text), status, rawJson: json };
+      }
     }
-    if (t <= 8) {
-      return {
-        title: "Cold — warm layers",
-        bullets: ["Thick jacket or sweater", "Scarf and gloves", "Warm shoes/boots"],
-        summary: `${t}°C — cold; use warm layers.`,
-        reason: "Local fallback: cool temperature."
-      };
-    }
-    if (t <= 20) {
-      return {
-        title: "Mild — light jacket",
-        bullets: ["Light jacket or long sleeve", "Comfortable trousers", "Normal shoes fine"],
-        summary: `${t}°C — mild; light outerwear recommended.`,
-        reason: "Local fallback: mild temperature."
-      };
-    }
-    return {
-      title: "Hot — light & breathable",
-      bullets: ["Breathable short sleeves and shorts", "Hat and sunglasses", "Drink water frequently"],
-      summary: `${t}°C — hot; choose breathable clothes.`,
-      reason: "Local fallback: warm temperature."
-    };
+    // Fallback: try older shape
+    const text = json?.candidates?.[0]?.content?.parts?.[0]?.text || json?.candidates?.[0]?.content?.parts || "";
+    if (text) return { text: safeTrim(text), status, rawJson: json };
+  } catch (e) {
+    // ignore and fallback
   }
-  return {
-    title: "Clothing suggestions",
-    bullets: ["Check local forecast", "Dress in layers", "Keep hydration in mind"],
-    summary: "No temperature data.",
-    reason: "Local fallback: missing temperature."
-  };
+
+  // Fallback: stringified json or raw plain text
+  return { text: safeTrim(JSON.stringify(json || "")), status, rawJson: json };
 }
 
-function agriFallback(weather) {
-  const t = Number(weather?.temp);
-  if (!isNaN(t) && t >= 30) {
-    return {
-      title: `Irrigation & heat precautions (${weather?.city || "location"})`,
-      bullets: ["Increase irrigation in early morning/late evening", "Provide shade for sensitive crops", "Monitor soil moisture closely"],
-      summary: "High temperature; take measures to protect crops from heat stress.",
-      reason: "Local fallback for hot and dry conditions."
-    };
+export async function callGemini(prompt, apiKey, model = GEMINI_MODEL, maxOutputTokens = 400) {
+  // Thin wrapper that returns { raw: text, status }
+  try {
+    const r = await callGeminiRaw(prompt, apiKey, model, maxOutputTokens);
+    return { raw: r.text, status: r.status, rawJson: r.rawJson };
+  } catch (e) {
+    return { raw: String(e || ""), status: 500, rawJson: null };
   }
-  if (weather?.condition && /rain/i.test(weather.condition)) {
-    return {
-      title: `Rain & drainage (${weather?.city || "location"})`,
-      bullets: ["Ensure drainage to avoid waterlogging", "Delay fertilizer until fields dry", "Check for fungal signs"],
-      summary: "Rain increases disease risk; protect fields and manage drainage.",
-      reason: "Local fallback for rainy conditions."
-    };
-  }
-  return {
-    title: `General farm guidance (${weather?.city || "location"})`,
-    bullets: ["Inspect irrigation schedule and soil moisture", "Check pest/disease signs", "Adjust field work schedule for safety"],
-    summary: "General actionable farm tips.",
-    reason: "Local fallback: default safe guidance."
-  };
 }
 
-function travelFallback(weather) {
-  if (weather?.condition && /rain/i.test(weather.condition)) {
-    return {
-      title: `Rain day tips (${weather?.city || "location"})`,
-      bullets: ["Carry an umbrella & waterproof shoes", "Prefer indoor activities or covered walks", "Check public transport for delays"],
-      summary: "Rain may disrupt outdoor plans; prepare accordingly.",
-      reason: "Local fallback for rainy travel situations."
-    };
-  }
-  const t = Number(weather?.temp);
-  if (!isNaN(t) && t >= 30) {
-    return {
-      title: `Hot day tips (${weather?.city || "location"})`,
-      bullets: ["Plan activities in early morning/late evening", "Carry water and wear a hat", "Avoid strenuous activities during peak heat"],
-      summary: "High temperature; plan accordingly for heat safety.",
-      reason: "Local fallback for hot travel days."
-    };
-  }
-  return {
-    title: `Travel suggestions (${weather?.city || "location"})`,
-    bullets: ["Bring a light jacket", "Plan flexible itinerary with indoor options", "Check local transit & opening hours"],
-    summary: "General travel guidance.",
-    reason: "Local fallback: default travel suggestions."
-  };
+// Heuristic for detecting Japanese text (hiragana/katakana/kanji)
+export function isJapaneseText(text) {
+  if (!text) return false;
+  // If contains any Hiragana / Katakana / Kanji characters
+  return /[\u3040-\u30ff\u4e00-\u9faf\u3000-\u303f]/.test(text);
 }
 
-function musicFallback(weather) {
-  const t = Number(weather?.temp);
-  if (weather?.condition && /rain/i.test(weather.condition)) {
-    return {
-      title: `Rainy day comfort (${weather?.city || "location"})`,
-      bullets: ["Lo-fi rain beats", "Mellow jazz", "Acoustic warmth"],
-      summary: "Comforting tracks for rainy moods.",
-      reason: "Local fallback for rainy weather music."
-    };
-  }
-  if (!isNaN(t) && t >= 30) {
-    return {
-      title: `Upbeat summer picks (${weather?.city || "location"})`,
-      bullets: ["Upbeat pop/dance", "Tropical house", "Summer hits playlist"],
-      summary: "Energizing music for hot days.",
-      reason: "Local fallback for sunny/hot conditions."
-    };
-  }
-  return {
-    title: `Chill suggestions (${weather?.city || "location"})`,
-    bullets: ["Indie chill playlist", "Singer-songwriter set", "Relaxed instrumental mix"],
-    summary: "General mellow listening suggestions.",
-    reason: "Local fallback: default music."
-  };
+// JP -> EN translator (uses a translation prompt)
+export async function translateTextJPtoEN(textJP, apiKey, model = GEMINI_MODEL) {
+  if (!textJP) return { text: "" };
+  const prompt = `Translate the following Japanese text into natural, fluent English. Return ONLY the translation (no extra commentary):\n\n${textJP}`;
+  const resp = await callGemini(prompt, apiKey, model, 300);
+  return { text: resp.raw || "" };
 }
 
-export function buildDomainPrompt(category, weather, user_text) {
-  const weatherSummary = `Weather: ${weather?.city || "unknown"}, temp: ${weather?.temp}°C, condition: ${weather?.condition || "unknown"}, wind: ${weather?.wind ?? "N/A"} m/s.`;
-  if (category === "agri" || category === "agriculture") {
-    return `
-You are an experienced agricultural advisor. Use the weather facts below and the user request to produce a concise JSON ONLY with the following schema:
-{
-  "title": "string",
-  "bullets": ["string","string","string"],
-  "summary": "string",
-  "reason": "string"
-}
-Rules:
-- Use numeric weather facts (temp, condition, wind) in reasoning.
-- Provide three practical actions for farmers.
-- Return ONLY valid JSON. No extra text.
-Weather: ${weatherSummary}
-User: ${user_text}
-    `.trim();
-  }
-  if (category === "music") {
-    return `
-You are a music recommendation engine. Based on weather and user request, produce ONLY a JSON object:
-{
-  "title": "string",
-  "bullets": ["string","string","string"],
-  "summary": "string",
-  "reason": "string"
-}
-Rules:
-- Bullets should be 3 short music recommendations (genre/playlist/artist).
-- No extra text other than the JSON.
-Weather: ${weatherSummary}
-User: ${user_text}
-    `.trim();
-  }
-  if (category === "travel") {
-    return `
-You are a travel/outings advisor. Produce ONLY a JSON object with keys: title, bullets (3), summary, reason.
-Rules:
-- Provide 3 practical tips for travel/outings based on weather.
-- No extra commentary.
-Weather: ${weatherSummary}
-User: ${user_text}
-    `.trim();
-  }
-  // default: fashion
-  return `
-You are a clothing/outfit advisor. Produce ONLY a JSON object with keys: title, bullets (3), summary, reason.
-Rules:
-- Use numeric temperature and condition to suggest appropriate outfit components.
-- Return ONLY valid JSON and nothing else.
-Weather: ${weatherSummary}
-User: ${user_text}
-  `.trim();
+// EN -> JP translator
+export async function translateTextENtoJP(textEN, apiKey, model = GEMINI_MODEL) {
+  if (!textEN) return { text: "" };
+  const prompt = `Translate the following English text into natural Japanese. Return ONLY the translation (no extra commentary):\n\n${textEN}`;
+  const resp = await callGemini(prompt, apiKey, model, 300);
+  return { text: resp.raw || "" };
 }
 
-export function normalizeParsed(parsed, category, weather) {
-  if (!parsed || typeof parsed !== "object") {
-    if (category === "agri" || category === "agriculture") return agriFallback(weather);
-    if (category === "travel") return travelFallback(weather);
-    if (category === "music") return musicFallback(weather);
-    return fashionFallback(weather);
+// Format structured results (title + bullets + summary) into a readable assistant string
+export function formatStructuredToAssistantText(parsedStructured) {
+  if (!parsedStructured) return "";
+  const title = safeTrim(parsedStructured.title || "");
+  let bullets = [];
+  if (Array.isArray(parsedStructured.bullets)) {
+    bullets = parsedStructured.bullets.map(b => safeTrim(b)).filter(Boolean);
   }
-  const out = {
-    title: parsed.title || `${category} suggestions (${weather?.city || "location"})`,
-    bullets: Array.isArray(parsed.bullets) ? parsed.bullets.map(String) : [],
-    summary: parsed.summary || "",
-    reason: parsed.reason || ""
-  };
-  if (out.bullets.length > 3) out.bullets = out.bullets.slice(0, 3);
-  while (out.bullets.length < 3) out.bullets.push("Adjust as needed.");
-  return out;
+  const summary = safeTrim(parsedStructured.summary || "");
+  const parts = [];
+  if (title) parts.push(title);
+  if (bullets.length) parts.push(bullets.map((b, i) => `${i + 1}. ${b}`).join("  "));
+  if (summary) parts.push(summary);
+  return parts.join("\n\n");
 }

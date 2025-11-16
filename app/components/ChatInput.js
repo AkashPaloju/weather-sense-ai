@@ -3,10 +3,6 @@
 
 import { useState, useRef } from "react";
 
-/**
- * ChatInput - Input box for chat messages
- * Supports text input, Enter to send, and optional voice input
- */
 export default function ChatInput({ onSend, language, t, disabled = false }) {
   const [message, setMessage] = useState("");
   const [listening, setListening] = useState(false);
@@ -40,7 +36,7 @@ export default function ChatInput({ onSend, language, t, disabled = false }) {
     // Auto-resize textarea
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px';
+      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 120) + 'px';
     }
   };
 
@@ -65,6 +61,11 @@ export default function ChatInput({ onSend, language, t, disabled = false }) {
       const transcript = event.results[0][0].transcript;
       setMessage(prev => prev + (prev ? ' ' : '') + transcript);
       setListening(false);
+      
+      // Focus textarea after voice input
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+      }
     };
 
     recognition.onerror = (event) => {
@@ -112,11 +113,11 @@ export default function ChatInput({ onSend, language, t, disabled = false }) {
           value={message}
           onChange={handleTextareaChange}
           onKeyDown={handleKeyDown}
-          placeholder={language === "ja" ? "メッセージを入力..." : "Type a message..."}
+          placeholder={language === "ja" ? "メッセージを入力するか、音声を録音してください" : "Chat in English or Toggle the language to chat in Japanese ..."}
           disabled={disabled}
           rows={1}
-          className="flex-1 px-4 py-3 border-2 border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none max-h-32 overflow-y-auto disabled:opacity-50 disabled:cursor-not-allowed"
-          style={{ minHeight: '44px' }}
+          className="flex-1 px-4 py-3 border-2 border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none overflow-y-auto disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ minHeight: '44px', maxHeight: '120px' }}
         />
 
         {/* Send button */}
@@ -133,8 +134,16 @@ export default function ChatInput({ onSend, language, t, disabled = false }) {
       </div>
 
       {/* Helper text */}
-      <div className="mt-2 text-xs text-gray-500 dark:text-gray-400 text-center">
-        {language === "ja" ? "Enter で送信 • Shift+Enter で改行" : "Press Enter to send • Shift+Enter for new line"}
+      <div className="mt-2 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+        <span>
+          {language === "ja" ? "Enter で送信 • Shift+Enter で改行" : "Press Enter to send • Shift+Enter for new line"}
+        </span>
+        {listening && (
+          <span className="text-red-500 dark:text-red-400 animate-pulse flex items-center gap-1">
+            <span className="w-2 h-2 bg-red-500 rounded-full"></span>
+            {language === "ja" ? "聞いています..." : "Listening..."}
+          </span>
+        )}
       </div>
     </div>
   );

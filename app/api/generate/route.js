@@ -1,104 +1,116 @@
 // app/api/generate/route.js
 import { NextResponse } from "next/server";
-import { callGemini, extractJsonFromText, isJapaneseText, translateTextJPtoEN, translateObjectToJapanese, buildDomainPrompt, normalizeParsed } from "../../lib/ai";
+import { callGemini, translateTextENtoJP, translateTextJPtoEN, formatStructuredToAssistantText } from "../../lib/ai";
 
 export const runtime = "nodejs";
 
-/**
- * Full Option-C pipeline using Google Gemini (gemini-2.0-flash)
- * - Detect JP / EN (simple unicode check)
- * - If JP: translate JP -> EN via Gemini
- * - Call domain model prompt (EN) via Gemini to get structured JSON
- * - Normalize/validate schema (title, bullets[3], summary, reason)
- * - Translate EN JSON -> JP via Gemini
- * - Return { en, jp, _meta }
- *
- * Env:
- * - GEMINI_API_KEY must be set
- *
- * Notes:
- * - This is server-side only. Never expose GEMINI_API_KEY to the browser.
- * - If any LLM call fails, deterministic local fallback will be used.
- */
+function buildGeneratePrompt_EN({ weather, user_text, category = "general" }) {
+  // Return prompt asking model to produce ONLY JSON in English with specific fields
+  const summary = `Weather: ${weather?.city || "unknown"}, ${weather?.temp ?? "N/A"}°C, ${weather?.condition || "N/A"}, wind ${weather?.wind ?? "N/A"} m/s.`;
+  return `
+You are a helpful domain specialist writing short actionable suggestions in English.
+
+Context:
+${summary}
+Category: ${category}
+
+User question:
+${user_text}
+
+Task:
+Return ONLY a valid JSON object (no surrounding text) with the following fields:
+{
+  "title": "<short title>",
+  "bullets": ["short bullet 1","short bullet 2","short bullet 3"],
+  "summary": "<one or two sentence summary>",
+  "reason": "<one-line reason why these suggestions>"
+}
+
+Bullets: give 3 concise actionable bullets targeted to the category and weather.
+Be practical and concise. Use natural English.
+  `.trim();
+}
 
 export async function POST(req) {
   try {
     const body = await req.json().catch(() => null);
-    if (!body) return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
+    if (!body) return NextResponse.json({ error: "invalid JSON" }, { status: 400 });
 
-    const { category = "fashion", user_text = "", weather = {} } = body;
-    if (!user_text || typeof weather.temp === "undefined") {
-      return NextResponse.json({ error: "user_text and weather.temp required" }, { status: 400 });
+    const { user_text, weather = {}, category = "general" } = body;
+    if (!user_text || typeof user_text !== "string" || !user_text.trim()) {
+      return NextResponse.json({ error: "user_text required" }, { status: 400 });
     }
 
     const API_KEY = process.env.GEMINI_API_KEY;
     if (!API_KEY) return NextResponse.json({ error: "GEMINI_API_KEY missing" }, { status: 500 });
 
-    const meta = {
-      detectedUserLanguage: null,
-      jpToEn: null,
-      domainRaw: null,
-      domainParsed: null,
-      domainModel: "gemini-2.0-flash",
-      en: null,
-      jp: null
-    };
+    // Ensure english prompt generation
+    const promptEN = buildGeneratePrompt_EN({ weather, user_text, category });
 
-    // 1) Detect if user_text is Japanese (quick heuristic)
-    const userIsJP = isJapaneseText(user_text);
-    meta.detectedUserLanguage = userIsJP ? "ja" : "en";
+    // Call Gemini to get JSON text (ask it to return ONLY JSON)
+    const gen = await callGemini(promptEN, API_KEY, undefined, 700);
+    const rawText = (gen.raw || "").trim();
 
-    // 2) If JP input -> translate JP -> EN
-    let enUserText = user_text;
-    if (userIsJP) {
-      const trans = await translateTextJPtoEN(user_text, API_KEY);
-      meta.jpToEn = { raw: trans.text, meta: trans.meta };
-      enUserText = trans.text || user_text; // fallback to original if empty
-    }
+    // Try to parse returned JSON. If parsing fails, attempt to strip fences and try again.
+    let enParsed = null;
+    let attemptText = rawText.replace(/```json|```/g, "").trim();
 
-    // 3) Build domain prompt with enUserText and call Gemini domain model
-    const domainPrompt = buildDomainPrompt(category, weather, enUserText);
-    const domainResp = await callGemini(domainPrompt, API_KEY);
-    meta.domainRaw = domainResp.raw;
-    // Try to parse
-    let parsed = extractJsonFromText(domainResp.raw);
-    meta.domainParsed = parsed ? true : false;
-
-    // Normalize (if parse failed, fallback)
-    const enFinal = normalizeParsed(parsed, category, weather);
-    meta.en = { sourceParsed: !!parsed, value: enFinal };
-
-    // 4) Translate enFinal -> JP (attempt)
-    const jpResult = await translateObjectToJapanese(enFinal, API_KEY);
-    const jpParsed = jpResult.parsed;
-    let jpFinal;
-    if (jpParsed) {
-      // ensure bullets length etc
-      jpFinal = normalizeParsed(jpParsed, category, weather);
-      meta.jp = { translated: true, raw: jpResult.raw };
-    } else {
-      // translation failed -> attempt a lightweight prompt to translate values one by one
-      // As fallback, use English object but mark translation failed
-      jpFinal = { ...enFinal, _translation_failed: true };
-      meta.jp = { translated: false, raw: jpResult.raw || null };
-    }
-
-    // 5) Add meta and return both
-    const out = {
-      en: enFinal,
-      jp: jpFinal,
-      _meta: {
-        model: meta.domainModel,
-        detectedUserLanguage: meta.detectedUserLanguage,
-        domainParsed: meta.domainParsed,
-        domainRawSnippet: String(meta.domainRaw).slice(0, 800),
-        translationSuccess: !!(jpParsed),
+    try {
+      enParsed = JSON.parse(attemptText);
+    } catch (e) {
+      // fallback: attempt to extract JSON substring
+      const jsonMatch = attemptText.match(/\{[\s\S]*\}$/);
+      if (jsonMatch) {
+        try {
+          enParsed = JSON.parse(jsonMatch[0]);
+        } catch (e2) {
+          enParsed = null;
+        }
       }
-    };
+    }
 
-    return NextResponse.json(out, { status: 200 });
+    // If still null, fallback to basic structured object with raw text in summary
+    if (!enParsed) {
+      enParsed = {
+        title: "",
+        bullets: [],
+        summary: attemptText,
+        reason: ""
+      };
+    }
+
+    // Build Japanese version by translating each field separately (clean)
+    const jp = { title: "", bullets: [], summary: "", reason: "" };
+    // translate title
+    if (enParsed.title) {
+      const t = await translateTextENtoJP(enParsed.title, API_KEY);
+      jp.title = t.text || "";
+    }
+    // translate bullets
+    if (Array.isArray(enParsed.bullets)) {
+      for (const b of enParsed.bullets) {
+        const t = await translateTextENtoJP(b, API_KEY);
+        jp.bullets.push(t.text || "");
+      }
+    }
+    // translate summary & reason
+    if (enParsed.summary) {
+      const t = await translateTextENtoJP(enParsed.summary, API_KEY);
+      jp.summary = t.text || "";
+    }
+    if (enParsed.reason) {
+      const t = await translateTextENtoJP(enParsed.reason, API_KEY);
+      jp.reason = t.text || "";
+    }
+
+    return NextResponse.json({
+      en: enParsed,
+      jp,
+      _meta: { modelStatus: gen.status || null }
+    }, { status: 200 });
+
   } catch (err) {
-    console.error("generate error:", err);
+    console.error("generate route error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }

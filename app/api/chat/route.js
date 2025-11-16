@@ -5,32 +5,16 @@ import {
   callGemini,
   isJapaneseText,
   translateTextJPtoEN,
-} from "../../lib/ai"; // adjust path if your lib is elsewhere
+  translateTextENtoJP,
+} from "../../lib/ai";
 
 export const runtime = "nodejs";
 
-/**
-Strict contract:
-- Request body:
-  {
-    "history": [ { "role": "user"|"assistant"|"system", "text": "<EN text>" }, ... ],
-    "message": "<user message in EN or JP>",
-    "context": { "category": "...", "weather": {"city","temp","condition","wind"} }
-  }
-
-- Response:
-  {
-    "reply_en": "...",
-    "reply_jp": "...",
-    "raw": "...",
-    "_meta": { ... }
-  }
-
-Notes:
-- FRONTEND MUST send history[].text in EN only.
-- Backend will translate message->EN if it detects JP.
-- Backend always returns both reply_en and reply_jp.
-*/
+function buildChatSystemText(category = "general", weather = {}) {
+  return `You are a helpful assistant specialized in ${category}. Use the weather context when relevant.
+Weather: ${weather?.city || "unknown"}, ${weather?.temp ?? "N/A"}°C, ${weather?.condition || "N/A"}, wind ${weather?.wind ?? "N/A"} m/s.
+Keep responses practical, concise, and user-focused.`;
+}
 
 export async function POST(req) {
   try {
@@ -39,39 +23,37 @@ export async function POST(req) {
 
     const { history = [], message = "", context = {} } = body;
     if (!Array.isArray(history)) return NextResponse.json({ error: "history must be array" }, { status: 400 });
-    if (typeof message !== "string" || message.trim().length === 0) {
+    if (typeof message !== "string" || !message.trim()) {
       return NextResponse.json({ error: "message required" }, { status: 400 });
     }
-
-    console.log(history, message, context);
 
     const API_KEY = process.env.GEMINI_API_KEY;
     if (!API_KEY) return NextResponse.json({ error: "GEMINI_API_KEY missing" }, { status: 500 });
 
     const meta = { detectedUserLanguage: null, messageTranslated: false, geminiStatus: null };
 
-    // 1) If message is Japanese -> translate to English (only the incoming message)
+    // 1) Translate incoming message if Japanese
     const userIsJP = isJapaneseText(message);
     meta.detectedUserLanguage = userIsJP ? "ja" : "en";
 
     let enMessage = message;
     if (userIsJP) {
-      const tr = await translateTextJPtoEN(message, API_KEY);
-      enMessage = tr.text || message;
-      meta.messageTranslated = !!tr.text;
+      const t = await translateTextJPtoEN(message, API_KEY);
+      enMessage = t.text || message;
+      meta.messageTranslated = !!t.text;
     }
 
-    // 2) Build the English prompt using history (which must already be English) + enMessage
-    // Limit history length to last 8 messages to save tokens
+    // 2) Build prompt using EN-only history and enMessage
+    // History must be array of objects { role, text } where text is EN
     const trimmedHistory = history.slice(-8);
     const historyText = trimmedHistory
-      .map((m) => `${(m.role || "user").toUpperCase()}: ${String(m.text || "").replace(/\n/g, " ")}`)
+      .map(m => `${(m.role || "user").toUpperCase()}: ${String(m.text || "").replace(/\n/g, " ")}`)
       .join("\n");
 
-    const weather = context.weather || {};
-    const category = context.category || "general";
+    const category = (context?.category || "general").toLowerCase();
+    const weather = context?.weather || {};
 
-    const systemText = `You are a helpful assistant specialized in ${category}. Use the weather context when relevant. Weather: ${weather.city || "unknown"}, ${weather.temp ?? "N/A"}°C, ${weather.condition || "N/A"}, wind ${weather.wind ?? "N/A"} m/s. Keep answers practical and concise.`;
+    const systemText = buildChatSystemText(category, weather);
 
     const prompt = `
 System: ${systemText}
@@ -81,38 +63,35 @@ ${historyText}
 
 User: ${enMessage}
 
-Reply in clear, helpful English. Do not return JSON; return plain text.
+Reply in clear helpful English. Be concise. Use the weather info if relevant.
+Return plain text only (no JSON).
 `.trim();
 
-    // 3) Call Gemini (English)
-    const gemResp = await callGemini(prompt, API_KEY, GEMINI_MODEL, 800);
-    meta.geminiStatus = gemResp.status;
-    const reply_en = (gemResp.raw || "").trim();
+    // 3) Call Gemini
+    const gem = await callGemini(prompt, API_KEY, GEMINI_MODEL, 800);
+    meta.geminiStatus = gem.status;
+    const reply_en = (gem.raw || "").trim();
 
-    // 4) Translate reply_en -> Japanese (single call), always return reply_jp
-    let reply_jp = null;
+    // 4) Translate reply_en -> Japanese
+    let reply_jp = "";
     try {
-      // Use a safe translate prompt; callGemini returns raw text
-      const translatePrompt = `Translate the following English text into natural Japanese. Return only the translation as plain text.\n\n${reply_en}`;
-      const trResp = await callGemini(translatePrompt, API_KEY, GEMINI_MODEL, 400);
-      reply_jp = (trResp.raw || "").trim();
+      const tr = await translateTextENtoJP(reply_en, API_KEY);
+      reply_jp = tr.text || "";
     } catch (e) {
-      // fallback: blank or small copy
       reply_jp = "";
-      console.error("translate EN->JP error:", e);
     }
 
-    // 5) Return both English and Japanese replies
+    // 5) Return reply_en + reply_jp + message_en so frontend can store
     return NextResponse.json({
       message_en: enMessage,
       reply_en,
       reply_jp,
-      raw: gemResp.raw,
+      raw: gem.raw,
       _meta: {
         detectedUserLanguage: meta.detectedUserLanguage,
         messageTranslated: meta.messageTranslated,
-        geminiStatus: meta.geminiStatus,
-      },
+        geminiStatus: meta.geminiStatus
+      }
     }, { status: 200 });
 
   } catch (err) {
