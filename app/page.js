@@ -8,6 +8,8 @@ import WeatherCard from "./components/WeatherCard";
 import LanguageToggle from "./components/LanguageToggle";
 import HomePanel from "./components/HomePanel";
 import { getTranslation } from "./lib/i18n";
+import Image from "next/image";
+import logoImage from "/public/logo.png";
 
 export default function Home() {
   // UI Language (for labels, not AI response)
@@ -346,6 +348,7 @@ export default function Home() {
           <div className="p-6 space-y-6">
             {/* Header with Language Toggle */}
             <div className="flex items-center justify-between mb-6">
+              <Image src={logoImage} alt="WeatherSense AI Logo" className="w-12 h-12" />
               <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
                 {t.appName}
               </h1>
