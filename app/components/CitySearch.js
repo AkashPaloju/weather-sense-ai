@@ -77,7 +77,7 @@ export default function CitySearch({ onSelectCity, t }) {
         clearTimeout(debounceTimer.current);
       }
     };
-  }, [query, t]);
+  }, [query]);
 
   const handleSelectCity = (city) => {
     // Step 1: Set the ref flag FIRST (synchronous)
