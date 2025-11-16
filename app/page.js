@@ -348,10 +348,12 @@ export default function Home() {
           <div className="p-6 space-y-6">
             {/* Header with Language Toggle */}
             <div className="flex items-center justify-between mb-6">
-              <Image src={logoImage} alt="WeatherSense AI Logo" className="w-12 h-12" />
-              <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-                {t.appName}
-              </h1>
+              <div className="flex items-center">
+                <Image src={logoImage} alt="WeatherSense AI Logo" className="w-12 h-12" />
+                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+                  {t.appName}
+                </h1>
+              </div>
               <LanguageToggle language={language} onChange={setLanguage} />
             </div>
 
@@ -418,9 +420,12 @@ export default function Home() {
           <div className="p-4 space-y-4">
             {/* Header */}
             <div className="flex items-center justify-between">
-              <h1 className="text-xl font-bold text-gray-900 dark:text-white">
-                {t.appName}
-              </h1>
+              <div className="flex items-center gap-3">
+                <Image src={logoImage} alt="WeatherSense AI Logo" className="w-10 h-10" />
+                <h1 className="text-xl font-bold text-gray-900 dark:text-white">
+                  {t.appName}
+                </h1>
+              </div>
               <LanguageToggle language={language} onChange={setLanguage} />
             </div>
 
